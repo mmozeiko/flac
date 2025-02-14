@@ -43,8 +43,15 @@
 #include <windows.h> /* for GetFileType() */
 #include <io.h> /* for _get_osfhandle() */
 #endif
-#ifdef HAVE_PTHREAD
+#ifdef _WIN32
+#include "win32_threads.h"
+#define FLAC_THREAD_FUN(name) DWORD WINAPI name
+#define HAVE_PTHREAD 1
+#elif defined(HAVE_PTHREAD)
 #include <pthread.h>
+#define FLAC_THREAD_FUN(name) void * name
+#else
+#define FLAC_THREAD_FUN(name) void * name
 #endif
 #include "share/compat.h"
 #include "FLAC/assert.h"
@@ -219,7 +226,7 @@ static void update_metadata_(const FLAC__StreamEncoder *encoder);
 static void update_ogg_metadata_(FLAC__StreamEncoder *encoder);
 #endif
 static FLAC__bool process_frame_(FLAC__StreamEncoder *encoder, FLAC__bool is_last_block);
-void * process_frame_thread_(void * encoder);
+FLAC_THREAD_FUN(process_frame_thread_)(void * encoder);
 FLAC__bool process_frame_thread_inner_(FLAC__StreamEncoder * encoder, FLAC__StreamEncoderThreadTask *threadtask);
 static FLAC__bool process_subframes_(FLAC__StreamEncoder *encoder, FLAC__StreamEncoderThreadTask *threadtask);
 
@@ -3612,7 +3619,8 @@ FLAC__bool process_frame_(FLAC__StreamEncoder *encoder, FLAC__bool is_last_block
 }
 
 #ifdef HAVE_PTHREAD
-void * process_frame_thread_(void * args) {
+FLAC_THREAD_FUN(process_frame_thread_)(void * args)
+{
 	FLAC__StreamEncoder * encoder = args;
 	uint32_t channel;
 
@@ -3624,7 +3632,7 @@ void * process_frame_thread_(void * args) {
 		pthread_mutex_lock(&encoder->private_->mutex_work_queue);
 		if(encoder->private_->finish_work_threads) {
 			pthread_mutex_unlock(&encoder->private_->mutex_work_queue);
-			return NULL;
+			return 0;
 		}
 		/* The code below pauses and restarts threads if it is noticed threads are often put too sleep
 		 * because of a lack of work. This reduces overhead when too many threads are active. The
@@ -3647,7 +3655,7 @@ void * process_frame_thread_(void * args) {
 		while(encoder->private_->num_available_threadtasks == 0 && (encoder->private_->md5_active || encoder->private_->md5_fifo.tail == 0)) {
 			if(encoder->private_->finish_work_threads) {
 				pthread_mutex_unlock(&encoder->private_->mutex_work_queue);
-				return NULL;
+				return 0;
 			}
 			pthread_cond_wait(&encoder->private_->cond_work_available, &encoder->private_->mutex_work_queue);
 		}
@@ -3659,7 +3667,7 @@ void * process_frame_thread_(void * args) {
 				pthread_mutex_unlock(&encoder->private_->mutex_work_queue);
 				if(!FLAC__MD5Accumulate(&encoder->private_->md5context, (const FLAC__int32 * const *)encoder->private_->md5_fifo.data, encoder->protected_->channels, length, (encoder->protected_->bits_per_sample+7) / 8)) {
 					encoder->protected_->state = FLAC__STREAM_ENCODER_MEMORY_ALLOCATION_ERROR;
-					return NULL;
+					return 0;
 				}
 				pthread_mutex_lock(&encoder->private_->mutex_md5_fifo);
 				for(channel = 0; channel < encoder->protected_->channels; channel++)
@@ -3682,7 +3690,7 @@ void * process_frame_thread_(void * args) {
 			pthread_mutex_unlock(&encoder->private_->mutex_work_queue);
 			pthread_mutex_lock(&task->mutex_this_task);
 			if(!process_frame_thread_inner_(encoder, task))
-				return NULL;
+				return 0;
 		}
 		else {
 			pthread_mutex_unlock(&encoder->private_->mutex_work_queue);
